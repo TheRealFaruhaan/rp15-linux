@@ -102,4 +102,15 @@ separate app ID, so it does not touch an installed instance):
 RP15_SCREENSHOT=/tmp/shot.png ./target/debug/rp15-control
 ```
 
-The reverse-engineering notes this is based on are in `../FINDINGS.md`.
+## How it was made
+
+Reverse-engineered on this laptop from the ACPI tables (the `\_SB.INOU` EC
+methods and the WMI event GUIDs), live EC RAM dumps under load (with RAPL package
+power measured for every mode), the vendor Control Center's metadata, and the
+tuxedo-drivers support for the sibling TUXEDO Polaris 15 Gen1 AMD. The detailed
+notes are kept in a separate archive.
+
+## License
+
+GPL-2.0-or-later, see [LICENSE](LICENSE). The driver is derived from the Linux
+kernel's `uniwill-laptop` driver by Armin Wolf.
