@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3a3a42"/>
+      <stop offset="1" stop-color="#1c1c21"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="1" r="0.75">
+      <stop offset="0" stop-color="#ff2a2a" stop-opacity="0.85"/>
+      <stop offset="1" stop-color="#ff2a2a" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="ring" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0" stop-color="#33d17a"/>
+      <stop offset="0.6" stop-color="#f5c211"/>
+      <stop offset="1" stop-color="#e01b24"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="112" height="112" rx="26" fill="url(#bg)"/>
+  <rect x="8" y="64" width="112" height="56" rx="26" fill="url(#glow)"/>
+  <!-- temperature ring -->
+  <path d="M 40.4 71.6 A 28 28 0 1 1 87.6 71.6" fill="none" stroke="url(#ring)" stroke-width="7" stroke-linecap="round"/>
+  <!-- fan -->
+  <g transform="translate(64 52)" fill="#f2f2f2">
+    <circle r="4.2"/>
+    <path d="M2 -2 C4 -14 15 -12 13 -3 C11 1 6 2 2 2 Z"/>
+    <path d="M2 -2 C4 -14 15 -12 13 -3 C11 1 6 2 2 2 Z" transform="rotate(90)"/>
+    <path d="M2 -2 C4 -14 15 -12 13 -3 C11 1 6 2 2 2 Z" transform="rotate(180)"/>
+    <path d="M2 -2 C4 -14 15 -12 13 -3 C11 1 6 2 2 2 Z" transform="rotate(270)"/>
+  </g>
+  <!-- keyboard rows -->
+  <g fill="#141418" stroke="#ff4040" stroke-width="1.5">
+    <rect x="26" y="88" width="10" height="8" rx="2"/><rect x="39" y="88" width="10" height="8" rx="2"/>
+    <rect x="52" y="88" width="10" height="8" rx="2"/><rect x="65" y="88" width="10" height="8" rx="2"/>
+    <rect x="78" y="88" width="10" height="8" rx="2"/><rect x="91" y="88" width="11" height="8" rx="2"/>
+    <rect x="26" y="99" width="14" height="8" rx="2"/><rect x="43" y="99" width="42" height="8" rx="2"/>
+    <rect x="88" y="99" width="14" height="8" rx="2"/>
+  </g>
+</svg>

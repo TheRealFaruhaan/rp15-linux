@@ -1,0 +1,6 @@
+# Eluktronics RP-15: F5 (touchpad lock) sends Ctrl+Super+F24, the Windows 11
+# touchpad-toggle convention (AT scancode 0x76). Map it to F21, which XKB turns into XF86TouchpadToggle
+# (KEY_TOUCHPAD_TOGGLE is code 530, beyond what the XKB keymaps cover),
+# so that GNOME's <Ctrl><Super>XF86TouchpadToggle binding toggles the touchpad.
+evdev:atkbd:dmi:*:svnEluktronicsInc.:pnRP-15:*
+ KEYBOARD_KEY_76=f21

@@ -1,0 +1,95 @@
+.gauge-card {
+  padding: 18px 12px 16px 12px;
+}
+
+.gauge-value {
+  font-size: 30px;
+  font-weight: 800;
+  font-feature-settings: "tnum";
+}
+
+.gauge-caption {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  opacity: 0.55;
+}
+
+.gauge-rpm {
+  font-feature-settings: "tnum";
+  opacity: 0.75;
+}
+
+.keyboard-card {
+  padding: 12px;
+}
+
+.preview-label {
+  font-size: 11px;
+  font-weight: 700;
+  opacity: 0.7;
+}
+
+button.swatch {
+  min-width: 34px;
+  min-height: 34px;
+  padding: 0;
+  border-radius: 999px;
+  box-shadow: inset 0 0 0 1px alpha(black, 0.18);
+  transition: transform 120ms ease, box-shadow 120ms ease;
+}
+
+button.swatch:hover {
+  transform: scale(1.08);
+}
+
+button.swatch.selected {
+  box-shadow: inset 0 0 0 1px alpha(black, 0.18), 0 0 0 3px @window_bg_color, 0 0 0 5px @accent_color;
+}
+
+.mode-card {
+  padding: 14px 6px 12px 6px;
+  border-radius: 16px;
+}
+
+.mode-card .mode-name {
+  font-weight: 800;
+}
+
+.mode-card .mode-watts {
+  font-size: 12px;
+  font-feature-settings: "tnum";
+  opacity: 0.6;
+}
+
+.mode-card.office:checked {
+  background: alpha(#33d17a, 0.22);
+  color: #33d17a;
+  box-shadow: inset 0 0 0 2px alpha(#33d17a, 0.85);
+}
+
+.mode-card.gaming:checked {
+  background: alpha(#f5c211, 0.20);
+  color: #e5a50a;
+  box-shadow: inset 0 0 0 2px alpha(#f5c211, 0.85);
+}
+
+.mode-card.beast:checked {
+  background: alpha(#e01b24, 0.22);
+  color: #ff5a5f;
+  box-shadow: inset 0 0 0 2px alpha(#e01b24, 0.9);
+}
+
+.mode-card:checked .mode-watts {
+  opacity: 0.9;
+}
+
+.power-card {
+  padding: 12px 14px;
+}
+
+.power-value {
+  font-size: 26px;
+  font-weight: 800;
+  font-feature-settings: "tnum";
+}

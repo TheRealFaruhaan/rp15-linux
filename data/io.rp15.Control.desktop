@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=RP-15 Control
+GenericName=Laptop Control Center
+Comment=Fans, temperatures, keyboard backlight and Fn lock for the Eluktronics RP-15
+Exec=rp15-control
+Icon=io.rp15.Control
+Terminal=false
+Categories=Settings;HardwareSettings;GTK;
+Keywords=fan;temperature;keyboard;backlight;rgb;fn;eluktronics;
+StartupNotify=true

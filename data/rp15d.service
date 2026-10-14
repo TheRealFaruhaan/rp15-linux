@@ -1,0 +1,19 @@
+[Unit]
+Description=Eluktronics RP-15 helper (keyboard backlight, Fn lock, sleep-key guard)
+After=systemd-modules-load.service
+
+[Service]
+Type=dbus
+BusName=io.rp15.Daemon
+ExecStart=/usr/local/libexec/rp15d
+Restart=on-failure
+StateDirectory=rp15d
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

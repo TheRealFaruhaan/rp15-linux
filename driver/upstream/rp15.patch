@@ -1,0 +1,645 @@
+--- orig/uniwill-acpi.c	2026-10-14 19:32:47.561491510 +0500
++++ uniwill-acpi.c	2026-10-14 23:10:24.435855266 +0500
+@@ -39,6 +39,7 @@
+ #include <linux/mutex.h>
+ #include <linux/notifier.h>
+ #include <linux/platform_device.h>
++#include <linux/platform_profile.h>
+ #include <linux/pm.h>
+ #include <linux/printk.h>
+ #include <linux/regmap.h>
+@@ -321,6 +322,31 @@
+ #define UNIWILL_FEATURE_BATTERY			BIT(4)
+ #define UNIWILL_FEATURE_HWMON			BIT(5)
+ #define UNIWILL_FEATURE_NVIDIA_CTGP_CONTROL	BIT(6)
++#define UNIWILL_FEATURE_KBD_RGB			BIT(7)
++#define UNIWILL_FEATURE_PERF_MODES		BIT(8)
++
++/*
++ * Performance modes on boards like the RP-15 (vendor names Office / Gaming /
++ * Beast). EC_ADDR_MANUAL_FAN_CTRL mainly selects the mode LEDs here; the
++ * sustained performance comes from the power limits, which userspace sets.
++ */
++#define PERF_MODE_MASK		(FAN_MODE_USER | FAN_MODE_HIGH | FAN_MODE_TURBO)
++#define PERF_MODE_OFFICE	(FAN_MODE_USER | FAN_MODE_HIGH)
++#define PERF_MODE_GAMING	0x00
++#define PERF_MODE_BEAST		FAN_MODE_TURBO
++
++/* On the RP-15 class these are the manual fan levels L1-L5 (0-200), not cTGP */
++#define EC_ADDR_FAN_LEVELS	0x0743
++#define FAN_LEVEL_COUNT		5
++
++/* Highest values the vendor software uses (Beast Mode), in W */
++#define PL1_MAX			73
++#define PL2_MAX			73
++#define PL4_MAX			90
++
++#define KBD_MAX_BRIGHTNESS	4
++/* Values above 50 are rendered unpredictably (200 is dimmer than 50) */
++#define KBD_MAX_INTENSITY	50
+ 
+ struct uniwill_data {
+ 	struct device *dev;
+@@ -337,9 +363,14 @@
+ 	struct mutex led_lock;		/* Protects writes to the lightbar registers */
+ 	struct led_classdev_mc led_mc_cdev;
+ 	struct mc_subled led_mc_subled_info[LED_CHANNELS];
++	struct mutex kbd_lock;		/* Protects writes to the keyboard backlight registers */
++	struct led_classdev_mc kbd_mc_cdev;
++	struct mc_subled kbd_subled_info[LED_CHANNELS];
++	unsigned int kbd_last_color[LED_CHANNELS];
+ 	struct mutex input_lock;	/* Protects input sequence during notify */
+ 	struct input_dev *input_device;
+ 	struct notifier_block nb;
++	struct device *ppdev;
+ };
+ 
+ struct uniwill_battery_entry {
+@@ -524,6 +555,15 @@
+ 	case EC_ADDR_CTGP_DB_CTGP_OFFSET:
+ 	case EC_ADDR_CTGP_DB_TPP_OFFSET:
+ 	case EC_ADDR_CTGP_DB_DB_OFFSET:
++	case EC_ADDR_KBD_STATUS:
++	case EC_ADDR_RGB_RED:
++	case EC_ADDR_RGB_GREEN:
++	case EC_ADDR_RGB_BLUE:
++	case EC_ADDR_FAN_LEVELS + 4:
++	case EC_ADDR_MANUAL_FAN_CTRL:
++	case EC_ADDR_PL1_SETTING:
++	case EC_ADDR_PL2_SETTING:
++	case EC_ADDR_PL4_SETTING:
+ 		return true;
+ 	default:
+ 		return false;
+@@ -562,6 +602,16 @@
+ 	case EC_ADDR_CTGP_DB_CTGP_OFFSET:
+ 	case EC_ADDR_CTGP_DB_TPP_OFFSET:
+ 	case EC_ADDR_CTGP_DB_DB_OFFSET:
++	case EC_ADDR_KBD_STATUS:
++	case EC_ADDR_RGB_RED:
++	case EC_ADDR_RGB_GREEN:
++	case EC_ADDR_RGB_BLUE:
++	case EC_ADDR_FAN_LEVELS + 4:
++	case EC_ADDR_MANUAL_FAN_CTRL:
++	case EC_ADDR_PL1_SETTING:
++	case EC_ADDR_PL2_SETTING:
++	case EC_ADDR_PL4_SETTING:
++	case EC_ADDR_FAN_DEFAULT ... EC_ADDR_FAN_DEFAULT + FAN_LEVEL_COUNT - 1:
+ 		return true;
+ 	default:
+ 		return false;
+@@ -584,6 +634,14 @@
+ 	case EC_ADDR_TRIGGER:
+ 	case EC_ADDR_SWITCH_STATUS:
+ 	case EC_ADDR_CHARGE_CTRL:
++	case EC_ADDR_KBD_STATUS:
++	case EC_ADDR_RGB_RED:
++	case EC_ADDR_RGB_GREEN:
++	case EC_ADDR_RGB_BLUE:
++	case EC_ADDR_MANUAL_FAN_CTRL:
++	case EC_ADDR_PL1_SETTING:
++	case EC_ADDR_PL2_SETTING:
++	case EC_ADDR_PL4_SETTING:
+ 		return true;
+ 	default:
+ 		return false;
+@@ -624,6 +682,9 @@
+ 	if (ret < 0)
+ 		return ret;
+ 
++	/* The EC sends no event for this, unlike for Fn+Esc */
++	sysfs_notify(&dev->kobj, NULL, "fn_lock");
++
+ 	return count;
+ }
+ 
+@@ -880,6 +941,196 @@
+ 	return 0;
+ }
+ 
++static ssize_t fan_boost_store(struct device *dev, struct device_attribute *attr, const char *buf,
++			       size_t count)
++{
++	struct uniwill_data *data = dev_get_drvdata(dev);
++	bool enable;
++	int ret;
++
++	ret = kstrtobool(buf, &enable);
++	if (ret < 0)
++		return ret;
++
++	/* Both fans run at full speed while set, independent of the mode */
++	ret = regmap_update_bits(data->regmap, EC_ADDR_MANUAL_FAN_CTRL, FAN_MODE_BOOST,
++				 enable ? FAN_MODE_BOOST : 0);
++	if (ret < 0)
++		return ret;
++
++	return count;
++}
++
++static ssize_t fan_boost_show(struct device *dev, struct device_attribute *attr, char *buf)
++{
++	struct uniwill_data *data = dev_get_drvdata(dev);
++	unsigned int value;
++	int ret;
++
++	ret = regmap_read(data->regmap, EC_ADDR_MANUAL_FAN_CTRL, &value);
++	if (ret < 0)
++		return ret;
++
++	return sysfs_emit(buf, "%d\n", !!(value & FAN_MODE_BOOST));
++}
++
++static DEVICE_ATTR_RW(fan_boost);
++
++/* Power limits in W, 0 means "no override" (firmware default, about 30 W sustained) */
++static ssize_t uniwill_pl_store(struct device *dev, const char *buf, size_t count,
++				unsigned int reg, unsigned int max)
++{
++	struct uniwill_data *data = dev_get_drvdata(dev);
++	unsigned int value;
++	int ret;
++
++	ret = kstrtouint(buf, 0, &value);
++	if (ret < 0)
++		return ret;
++
++	if (value > max)
++		return -EINVAL;
++
++	ret = regmap_write(data->regmap, reg, value);
++	if (ret < 0)
++		return ret;
++
++	return count;
++}
++
++static ssize_t uniwill_pl_show(struct device *dev, char *buf, unsigned int reg)
++{
++	struct uniwill_data *data = dev_get_drvdata(dev);
++	unsigned int value;
++	int ret;
++
++	ret = regmap_read(data->regmap, reg, &value);
++	if (ret < 0)
++		return ret;
++
++	return sysfs_emit(buf, "%u\n", value);
++}
++
++#define UNIWILL_PL_ATTR(_name, _reg, _max)						\
++static ssize_t _name##_store(struct device *dev, struct device_attribute *attr,		\
++			     const char *buf, size_t count)				\
++{											\
++	return uniwill_pl_store(dev, buf, count, _reg, _max);				\
++}											\
++static ssize_t _name##_show(struct device *dev, struct device_attribute *attr, char *buf)	\
++{											\
++	return uniwill_pl_show(dev, buf, _reg);						\
++}											\
++static DEVICE_ATTR_RW(_name)
++
++UNIWILL_PL_ATTR(power_limit_pl1, EC_ADDR_PL1_SETTING, PL1_MAX);
++UNIWILL_PL_ATTR(power_limit_pl2, EC_ADDR_PL2_SETTING, PL2_MAX);
++UNIWILL_PL_ATTR(power_limit_pl4, EC_ADDR_PL4_SETTING, PL4_MAX);
++
++static int uniwill_profile_probe(void *drvdata, unsigned long *choices)
++{
++	set_bit(PLATFORM_PROFILE_LOW_POWER, choices);
++	set_bit(PLATFORM_PROFILE_BALANCED, choices);
++	set_bit(PLATFORM_PROFILE_PERFORMANCE, choices);
++
++	return 0;
++}
++
++static int uniwill_profile_get(struct device *dev, enum platform_profile_option *profile)
++{
++	struct uniwill_data *data = dev_get_drvdata(dev);
++	unsigned int value;
++	int ret;
++
++	ret = regmap_read(data->regmap, EC_ADDR_MANUAL_FAN_CTRL, &value);
++	if (ret < 0)
++		return ret;
++
++	switch (value & PERF_MODE_MASK) {
++	case PERF_MODE_OFFICE:
++		*profile = PLATFORM_PROFILE_LOW_POWER;
++		break;
++	case PERF_MODE_BEAST:
++		*profile = PLATFORM_PROFILE_PERFORMANCE;
++		break;
++	default:
++		*profile = PLATFORM_PROFILE_BALANCED;
++		break;
++	}
++
++	return 0;
++}
++
++static int uniwill_profile_set(struct device *dev, enum platform_profile_option profile)
++{
++	struct uniwill_data *data = dev_get_drvdata(dev);
++	unsigned int value;
++
++	switch (profile) {
++	case PLATFORM_PROFILE_LOW_POWER:
++		value = PERF_MODE_OFFICE;
++		break;
++	case PLATFORM_PROFILE_BALANCED:
++		value = PERF_MODE_GAMING;
++		break;
++	case PLATFORM_PROFILE_PERFORMANCE:
++		value = PERF_MODE_BEAST;
++		break;
++	default:
++		return -EOPNOTSUPP;
++	}
++
++	/* Keep fan boost and the fan level bits as they are */
++	return regmap_update_bits(data->regmap, EC_ADDR_MANUAL_FAN_CTRL, PERF_MODE_MASK, value);
++}
++
++static const struct platform_profile_ops uniwill_profile_ops = {
++	.probe = uniwill_profile_probe,
++	.profile_get = uniwill_profile_get,
++	.profile_set = uniwill_profile_set,
++};
++
++static int uniwill_perf_init(struct uniwill_data *data)
++{
++	unsigned int value;
++	bool empty = true;
++	int ret;
++
++	if (!uniwill_device_supports(data, UNIWILL_FEATURE_PERF_MODES))
++		return 0;
++
++	/*
++	 * Office mode drives the fans from the manual level table. If nothing
++	 * has filled it in yet, seed it with the EC's own default curve so that
++	 * the fans can never end up at 0% in that mode.
++	 */
++	for (int i = 0; i < FAN_LEVEL_COUNT; i++) {
++		ret = regmap_read(data->regmap, EC_ADDR_FAN_LEVELS + i, &value);
++		if (ret < 0)
++			return ret;
++		if (value)
++			empty = false;
++	}
++
++	if (empty) {
++		for (int i = 0; i < FAN_LEVEL_COUNT; i++) {
++			ret = regmap_read(data->regmap, EC_ADDR_FAN_DEFAULT + i, &value);
++			if (ret < 0)
++				return ret;
++			if (!value)
++				return -ENODEV;
++			ret = regmap_write(data->regmap, EC_ADDR_FAN_LEVELS + i, value);
++			if (ret < 0)
++				return ret;
++		}
++	}
++
++	data->ppdev = devm_platform_profile_register(data->dev, DRIVER_NAME, data,
++						     &uniwill_profile_ops);
++
++	return PTR_ERR_OR_ZERO(data->ppdev);
++}
++
+ static struct attribute *uniwill_attrs[] = {
+ 	/* Keyboard-related */
+ 	&dev_attr_fn_lock.attr,
+@@ -890,6 +1141,10 @@
+ 	&dev_attr_breathing_in_suspend.attr,
+ 	/* Power-management-related */
+ 	&dev_attr_ctgp_offset.attr,
++	&dev_attr_fan_boost.attr,
++	&dev_attr_power_limit_pl1.attr,
++	&dev_attr_power_limit_pl2.attr,
++	&dev_attr_power_limit_pl4.attr,
+ 	NULL
+ };
+ 
+@@ -924,6 +1179,14 @@
+ 			return attr->mode;
+ 	}
+ 
++	if (attr == &dev_attr_fan_boost.attr ||
++	    attr == &dev_attr_power_limit_pl1.attr ||
++	    attr == &dev_attr_power_limit_pl2.attr ||
++	    attr == &dev_attr_power_limit_pl4.attr) {
++		if (uniwill_device_supports(data, UNIWILL_FEATURE_PERF_MODES))
++			return attr->mode;
++	}
++
+ 	return 0;
+ }
+ 
+@@ -1108,6 +1371,174 @@
+ 
+ #define LIGHTBAR_MASK	(LIGHTBAR_APP_EXISTS | LIGHTBAR_S0_OFF | LIGHTBAR_S3_OFF | LIGHTBAR_WELCOME)
+ 
++static const unsigned int uniwill_kbd_channel_to_reg[] = {
++	EC_ADDR_RGB_RED,
++	EC_ADDR_RGB_GREEN,
++	EC_ADDR_RGB_BLUE,
++};
++
++static int uniwill_kbd_write_brightness(struct uniwill_data *data, unsigned int brightness)
++{
++	/* Always write, the EC might not clear the apply bit on its own */
++	return regmap_write_bits(data->regmap, EC_ADDR_KBD_STATUS, KBD_BRIGHTNESS | KBD_APPLY,
++				 FIELD_PREP(KBD_BRIGHTNESS, brightness) | KBD_APPLY);
++}
++
++static int uniwill_kbd_write_color(struct uniwill_data *data, bool force)
++{
++	unsigned int color[LED_CHANNELS];
++	bool changed = force;
++	int ret;
++
++	/* The LED core does not bound intensity values */
++	for (int i = 0; i < LED_CHANNELS; i++) {
++		color[i] = min(KBD_MAX_INTENSITY, data->kbd_subled_info[i].intensity);
++		if (color[i] != data->kbd_last_color[i])
++			changed = true;
++	}
++
++	if (!changed)
++		return 0;
++
++	for (int i = 0; i < LED_CHANNELS; i++) {
++		ret = regmap_write(data->regmap, uniwill_kbd_channel_to_reg[i], color[i]);
++		if (ret < 0)
++			return ret;
++	}
++
++	ret = regmap_write_bits(data->regmap, EC_ADDR_TRIGGER, RGB_APPLY_COLOR, RGB_APPLY_COLOR);
++	if (ret < 0)
++		return ret;
++
++	for (int i = 0; i < LED_CHANNELS; i++)
++		data->kbd_last_color[i] = color[i];
++
++	return 0;
++}
++
++static int uniwill_kbd_apply(struct uniwill_data *data, unsigned int brightness, bool force)
++{
++	bool black = true;
++	int ret;
++
++	for (int i = 0; i < LED_CHANNELS; i++) {
++		if (min(KBD_MAX_INTENSITY, data->kbd_subled_info[i].intensity))
++			black = false;
++	}
++
++	/*
++	 * Writing an all-zero color makes the EC load its default color instead,
++	 * so treat black as "off" and leave the stored color alone.
++	 */
++	if (black)
++		return uniwill_kbd_write_brightness(data, 0);
++
++	ret = uniwill_kbd_write_color(data, force);
++	if (ret < 0)
++		return ret;
++
++	return uniwill_kbd_write_brightness(data, brightness);
++}
++
++static int uniwill_kbd_brightness_set(struct led_classdev *led_cdev, enum led_brightness brightness)
++{
++	struct led_classdev_mc *led_mc_cdev = lcdev_to_mccdev(led_cdev);
++	struct uniwill_data *data = container_of(led_mc_cdev, struct uniwill_data, kbd_mc_cdev);
++
++	guard(mutex)(&data->kbd_lock);
++
++	return uniwill_kbd_apply(data, brightness, false);
++}
++
++/*
++ * In manual mode the EC still tracks the backlight level when the user presses
++ * the brightness keys and reports the new level, but leaves applying it to us.
++ */
++static void uniwill_kbd_level_event(struct uniwill_data *data, unsigned int level)
++{
++	struct led_classdev *led_cdev = &data->kbd_mc_cdev.led_cdev;
++	int ret;
++
++	ret = led_set_brightness_sync(led_cdev, level);
++	if (ret < 0) {
++		dev_err(data->dev, "Failed to apply keyboard backlight level %u: %d\n", level, ret);
++		return;
++	}
++
++	led_classdev_notify_brightness_hw_changed(led_cdev, level);
++}
++
++static int uniwill_kbd_init(struct uniwill_data *data)
++{
++	struct led_init_data init_data = {
++		.devicename = DRIVER_NAME,
++		.default_label = ":" LED_FUNCTION_KBD_BACKLIGHT,
++	};
++	unsigned int color_indices[3] = {
++		LED_COLOR_ID_RED,
++		LED_COLOR_ID_GREEN,
++		LED_COLOR_ID_BLUE,
++	};
++	bool out_of_range = false;
++	unsigned int value;
++	int ret;
++
++	if (!uniwill_device_supports(data, UNIWILL_FEATURE_KBD_RGB))
++		return 0;
++
++	ret = devm_mutex_init(data->dev, &data->kbd_lock);
++	if (ret < 0)
++		return ret;
++
++	/* Start from whatever the EC currently shows, so loading is invisible */
++	ret = regmap_read(data->regmap, EC_ADDR_KBD_STATUS, &value);
++	if (ret < 0)
++		return ret;
++
++	data->kbd_mc_cdev.led_cdev.color = LED_COLOR_ID_MULTI;
++	data->kbd_mc_cdev.led_cdev.max_brightness = KBD_MAX_BRIGHTNESS;
++	data->kbd_mc_cdev.led_cdev.brightness = min(KBD_MAX_BRIGHTNESS,
++						    FIELD_GET(KBD_BRIGHTNESS, value));
++	/* Keep the backlight as-is on unload, the EC takes over the keys again */
++	data->kbd_mc_cdev.led_cdev.flags = LED_REJECT_NAME_CONFLICT | LED_BRIGHT_HW_CHANGED |
++					   LED_RETAIN_AT_SHUTDOWN;
++	data->kbd_mc_cdev.led_cdev.brightness_set_blocking = uniwill_kbd_brightness_set;
++
++	for (int i = 0; i < LED_CHANNELS; i++) {
++		ret = regmap_read(data->regmap, uniwill_kbd_channel_to_reg[i], &value);
++		if (ret < 0)
++			return ret;
++
++		/*
++		 * Remember the raw value: if the firmware left something out of
++		 * range here, the first color write must not be skipped.
++		 */
++		data->kbd_last_color[i] = value;
++		if (value > KBD_MAX_INTENSITY)
++			out_of_range = true;
++		data->kbd_subled_info[i].color_index = color_indices[i];
++		data->kbd_subled_info[i].intensity = min(KBD_MAX_INTENSITY, value);
++		data->kbd_subled_info[i].channel = i;
++	}
++
++	data->kbd_mc_cdev.subled_info = data->kbd_subled_info;
++	data->kbd_mc_cdev.num_colors = LED_CHANNELS;
++
++	/*
++	 * The firmware sometimes leaves out-of-range values behind after boot,
++	 * which the EC then renders as a random color on the next brightness
++	 * change. Write the clamped color once so that the EC and the LED agree.
++	 */
++	if (out_of_range) {
++		ret = uniwill_kbd_write_color(data, true);
++		if (ret < 0)
++			return ret;
++	}
++
++	return devm_led_classdev_multicolor_register_ext(data->dev, &data->kbd_mc_cdev,
++							 &init_data);
++}
++
+ static int uniwill_led_init(struct uniwill_data *data)
+ {
+ 	struct led_init_data init_data = {
+@@ -1381,6 +1812,36 @@
+ 		sysfs_notify(&data->dev->kobj, NULL, "fn_lock");
+ 
+ 		return NOTIFY_OK;
++	case UNIWILL_OSD_PERFORMANCE_MODE_TOGGLE:
++		/* The power-mode button: the EC leaves switching to us in manual mode */
++		if (uniwill_device_supports(data, UNIWILL_FEATURE_PERF_MODES)) {
++			platform_profile_cycle();
++			return NOTIFY_OK;
++		}
++
++		mutex_lock(&data->input_lock);
++		sparse_keymap_report_event(data->input_device, action, 1, true);
++		mutex_unlock(&data->input_lock);
++
++		return NOTIFY_OK;
++	case UNIWILL_OSD_SUPER_KEY_DISABLE:
++	case UNIWILL_OSD_SUPER_KEY_ENABLE:
++	case UNIWILL_OSD_SUPER_KEY_STATE_CHANGED:
++		/* The EC toggles the lock itself, just tell userspace about it */
++		if (uniwill_device_supports(data, UNIWILL_FEATURE_SUPER_KEY))
++			sysfs_notify(&data->dev->kobj, NULL, "super_key_enable");
++
++		return NOTIFY_OK;
++	case UNIWILL_OSD_KB_LED_LEVEL0:
++	case UNIWILL_OSD_KB_LED_LEVEL1:
++	case UNIWILL_OSD_KB_LED_LEVEL2:
++	case UNIWILL_OSD_KB_LED_LEVEL3:
++	case UNIWILL_OSD_KB_LED_LEVEL4:
++		if (uniwill_device_supports(data, UNIWILL_FEATURE_KBD_RGB)) {
++			uniwill_kbd_level_event(data, action - UNIWILL_OSD_KB_LED_LEVEL0);
++			return NOTIFY_OK;
++		}
++		fallthrough;
+ 	default:
+ 		mutex_lock(&data->input_lock);
+ 		sparse_keymap_report_event(data->input_device, action, 1, true);
+@@ -1496,6 +1957,10 @@
+ 	if (ret < 0)
+ 		return ret;
+ 
++	ret = uniwill_kbd_init(data);
++	if (ret < 0)
++		return ret;
++
+ 	ret = uniwill_hwmon_init(data);
+ 	if (ret < 0)
+ 		return ret;
+@@ -1504,6 +1969,10 @@
+ 	if (ret < 0)
+ 		return ret;
+ 
++	ret = uniwill_perf_init(data);
++	if (ret < 0)
++		return ret;
++
+ 	return uniwill_input_init(data);
+ }
+ 
+@@ -1633,6 +2102,16 @@
+ 			       CTGP_DB_DB_ENABLE | CTGP_DB_CTGP_ENABLE);
+ }
+ 
++static int uniwill_resume_kbd(struct uniwill_data *data)
++{
++	if (!uniwill_device_supports(data, UNIWILL_FEATURE_KBD_RGB))
++		return 0;
++
++	guard(mutex)(&data->kbd_lock);
++
++	return uniwill_kbd_apply(data, data->kbd_mc_cdev.led_cdev.brightness, true);
++}
++
+ static int uniwill_resume(struct device *dev)
+ {
+ 	struct uniwill_data *data = dev_get_drvdata(dev);
+@@ -1656,6 +2135,10 @@
+ 	if (ret < 0)
+ 		return ret;
+ 
++	ret = uniwill_resume_kbd(data);
++	if (ret < 0)
++		return ret;
++
+ 	return uniwill_resume_nvidia_ctgp(data);
+ }
+ 
+@@ -1685,7 +2168,6 @@
+ static struct uniwill_device_descriptor lapac71h_descriptor __initdata = {
+ 	.features = UNIWILL_FEATURE_FN_LOCK |
+ 		    UNIWILL_FEATURE_SUPER_KEY |
+-		    UNIWILL_FEATURE_TOUCHPAD_TOGGLE |
+ 		    UNIWILL_FEATURE_BATTERY |
+ 		    UNIWILL_FEATURE_HWMON,
+ };
+@@ -1693,7 +2175,6 @@
+ static struct uniwill_device_descriptor lapkc71f_descriptor __initdata = {
+ 	.features = UNIWILL_FEATURE_FN_LOCK |
+ 		    UNIWILL_FEATURE_SUPER_KEY |
+-		    UNIWILL_FEATURE_TOUCHPAD_TOGGLE |
+ 		    UNIWILL_FEATURE_LIGHTBAR |
+ 		    UNIWILL_FEATURE_BATTERY |
+ 		    UNIWILL_FEATURE_HWMON,
+@@ -1724,8 +2205,28 @@
+ 
+ static struct uniwill_device_descriptor empty_descriptor __initdata = {};
+ 
++/*
++ * Eluktronics RP-15 (Tongfang, Ryzen 7 4800H + RTX 2060). 0x0743-0x0746
++ * are fan PWM levels on this EC, not cTGP, so NVIDIA_CTGP_CONTROL must stay off.
++ */
++static struct uniwill_device_descriptor eluktronics_rp15_descriptor __initdata = {
++	.features = UNIWILL_FEATURE_FN_LOCK |
++		    UNIWILL_FEATURE_SUPER_KEY |
++		    UNIWILL_FEATURE_HWMON |
++		    UNIWILL_FEATURE_KBD_RGB |
++		    UNIWILL_FEATURE_PERF_MODES,
++};
++
+ static const struct dmi_system_id uniwill_dmi_table[] __initconst = {
+ 	{
++		.ident = "Eluktronics RP-15",
++		.matches = {
++			DMI_EXACT_MATCH(DMI_SYS_VENDOR, "Eluktronics Inc."),
++			DMI_EXACT_MATCH(DMI_PRODUCT_NAME, "RP-15"),
++		},
++		.driver_data = &eluktronics_rp15_descriptor,
++	},
++	{
+ 		.ident = "XMG FUSION 15",
+ 		.matches = {
+ 			DMI_MATCH(DMI_SYS_VENDOR, "SchenkerTechnologiesGmbH"),

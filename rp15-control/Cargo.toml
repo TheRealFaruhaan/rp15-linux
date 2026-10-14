@@ -1,0 +1,13 @@
+[package]
+name = "rp15-control"
+version = "1.0.0"
+edition = "2021"
+description = "Control center for the Eluktronics RP-15"
+license = "GPL-2.0-or-later"
+
+[dependencies]
+gtk = { package = "gtk4", version = "0.11", features = ["v4_18"] }
+adw = { package = "libadwaita", version = "0.9", features = ["v1_7"] }
+zbus = { version = "5", default-features = false, features = ["async-io"] }
+futures-util = { version = "0.3", default-features = false }
+glib-unix = "0.22"

@@ -1,0 +1,7 @@
+[workspace]
+resolver = "2"
+members = ["rp15d", "rp15-control"]
+
+[profile.release]
+lto = true
+strip = true

@@ -1,0 +1,10 @@
+{
+  "uuid": "rp15-osd@rp15.io",
+  "name": "RP-15 OSD",
+  "description": "Coloured, animated on-screen displays for the Eluktronics RP-15: power mode, Fn lock, Super key lock, fan boost and the sleep-key prompt. Needs rp15d.",
+  "shell-version": [
+    "50"
+  ],
+  "version": 1,
+  "version-name": "1.0"
+}

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=RP-15 Control (background)
+Comment=Shows the "press sleep again" prompt for the RP-15 sleep key
+Exec=rp15-control --background
+Icon=io.rp15.Control
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
+X-GNOME-AutoRestart=true
